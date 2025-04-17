@@ -4,15 +4,12 @@ This repository serves to publish code overviews and notes for the bioinformatic
 
 The link to this study is here: 
 
-Because the bioinformatic steps for analyzing data were performed across a mix of high performance computing clusters and piecemealed across different sample subsets, I thought it would be better to publish general summaries of the code with notes instead. 
+Because the bioinformatic steps for analyzing data were performed across a mix of high performance computing clusters and piecemealed across different sample subsets, I thought it would be better to publish general summaries of the code with notes instead. See bioinformatic-workflow-figure.png for a visual representation of this workflow. 
 
 There are X different summary files in this repository: 
-1. XX.txt: processing raw read data to producing the final bam files (from which we extracted different data types)  
+1. RawReads-to-bams.txt: processing raw read data to producing the final bam files
+2. UCE-overview.txt
+3. BUSCO-overview.txt
+4. SNP-overview.txt
+5. MtDNA-overview.txt 
 
-
-For the analyses presented in 
-The bioinformatic steps that we performed to take Illumina raw reads 
-
-extracting different molecular markers and performing  
-
-Code summaries of analyzing raw read data to estimating phylogenetic trees for McCullough et al. (in review)
