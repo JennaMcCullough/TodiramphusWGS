@@ -4,6 +4,10 @@ This repository serves to publish code overviews and notes for the bioinformatic
 
 The link to this study is here: 
 
+The Dryad link is here:
+
+The Zenodo link is here: 
+
 Because the bioinformatic steps for analyzing data were performed across a mix of high performance computing clusters and piecemealed across different sample subsets, I thought it would be better to publish general summaries of the code with notes instead. See bioinformatic-workflow-figure.png for a visual representation of this workflow. 
 
 There are X different summary files in this repository: 
