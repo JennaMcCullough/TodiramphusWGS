@@ -1,0 +1,136 @@
+#Code overview for  BUSCOs from McCullough et al. 2025
+# Written by Jenna McCullough 18 April 2025 
+
+#This document is a general overview of the code we used to extract BUSCOs from the final .bam files. The Dryad repository has a datasets.zip file that has many of the final output files described here. This was written to extract BUSCO loci out of resequenced whole genomes that are all aligned to the same reference genome of a Todiramphus chloris (TodChl). 
+
+########################## Preparing Data  ############################################
+# prior to extracting BUSCOs, I got consensus sequences for the genomes. On the HPC, I did ran this script in an R environment. The "getConsensus.R" script that is called here is in in the specific_scripts directory. 
+
+source("getConsensus.R")
+library(parallel)
+
+# List of samples
+mask-samples.txt <- list.files("bams", pattern="realign.bam$", full=TRUE)
+
+# Repeat-masked collared kingfisher reference we'll be using
+ref <- "ref_genome/todChl.scaffolds.full_mask.fa"
+
+# Do the SNV calling and get concensus genome sequences
+# Took ~24h for 30 VCF files (~1.3 GB each), consensus calling only 5m each
+
+for i in mask-samples.txt
+do
+  	echo "Working on sample ${i}"
+        outfa=consensus/${i}_realign.con.fa
+        zcat mosdepth/${i}_realign.per-base.bed.gz |\
+        awk '{if($4<5)print $1"\t"$2"\t"$3"\t"$4}' |\
+        bedtools maskfasta -fi ${outfa} -fo consensus/${i}_realign.con.masked.fa -bed -
+done
+
+########################## Extracting BUSCOs ############################################
+# There’s three steps:
+#1. Run the BUSCO program on the reference genome. This produces metaeuk output that can be converted into a coordinate GFF file. 
+#2. Using that GFF file, we can extract metaeuk genes from the other genomes, all of which are in fasta format. 
+
+# 1. run BUSCO once on the reference genome. 
+cd ~/busco
+# Run BUSCO on the reference genome that has been indexed already
+REF=todChl.scaffolds.full_mask.fa
+busco -c 20 -i ${REF} -m genome -l aves -o=todChl_redo
+cd todChl_redo
+
+#2. extract genes, in amino acid format, from other fasta formatted genomes. note that this pulls all the genes from the genomes whether or not they have data at that location. This causes samples to be coded for missing data if they don't actually have data at that location. 
+# Now we need to convert metaeuk "GFF" to something sensible
+# the format output by the program doesn't work with gffread pipeline
+# Download script to convert metaeuk output to a GFF3 file-
+curl https://raw.githubusercontent.com/Andy-B-123/MetaeukToGff3/main/MetaeukToGff3.py
+
+# feel free to rename test.gff3 to something more informative...
+python MetaeukToGff3.py -f todChl_redo/run_aves_odb10/metaeuk_output/initial_results/todChl.scaffolds.full_mask.fa.fas -g test.gff3
+
+# Extract metaeuk genes for each species using the GFF file we just generated
+mkdir busco_output_fas
+for f in `ls ~/Storage/celiason_Phoebe/todi/genomes/*con.masked.fa`
+do
+	nm=`basename ${f} .con.masked.fa`
+	echo Working on $nm
+	gffread -g ${f} -y busco_output_fas/${nm}.faa test.gff3
+done
+
+# Create a list of specimens from the FASTAs
+find busco_output_fas -name '*.faa' | xargs -I{} basename {} ".faa" > specimen_list.txt
+
+# Get the list of BUSCO IDs for subsetting (metaeuk seems to give lots of genes, full_table has the BUSCOs)
+awk 'NR>3 {print $1}' todChl_redo/run_aves_odb10/full_table.tsv > busco_ids.txt
+
+# Append specimen/species names to FASTA sequence headers (for later)
+for sp in `cat specimen_list.txt`
+do
+	sed '/^>/s/ *$/ '${sp}'/g' busco_output_fas/${sp}.faa > busco_output_fas/${sp}_renamed.faa
+done
+
+# Combine all BUSCOs into a really big FASTA
+cat busco_output_fas/00_busco_output_fas/*_renamed.faa > busco_output_fas/todi103_all.faa
+
+# Rename headers (remove extra stuff, keeping only BUSCO IDs)
+sed -r 's/_.+mRNA//g' busco_output_fas/todi103_all.faa > busco_output_fas/todi103_all_renamed.faa
+
+# Pull out alignments for each BUSCO (e.g., for phylogenetics, etc.)
+# conda install -c bioconda ucsc-faSomeRecords
+mkdir busco_output_fas/01_alignments
+for loci in `cat busco_ids.txt`
+do
+	echo ${loci} > ID.txt
+	faSomeRecords busco_output_fas/todi103_all_renamed.faa ID.txt busco_output_fas/01_alignments/${loci}.faa
+done
+
+########################## Filtering BUSCOs ############################################
+
+# because all the data for the BUSCOs are already aligned, we don't need to realign anything prior to phylogenetic inference. We just need to clean up the samples from alignments and decide which loci we are going to analyze.  
+
+# There were some BUSCO loci that had duplicate names with one locus much shorter than the other. I removed the shorter versions. I also did not move forward with analysis on buscos that were completely invariant (there were less than 100). These types of filtering steps were done in Geneious. Since this way of extracting BUSCOs is much better for historical samples (compared to running each individual sample in the BUSCO program), it still has issues. Namely,  because it extracts whatever data is within the coordinates, there are samples that are completely ambiguous. So this was the intention to for the filtering schemes for individuals. 
+
+# I used the drop_fasta_X.py shell script within the directory where all the individual alignments are. We did a .5 threshold, so if a sample had 51% X's, it was removed. The code looks like this  
+python fasta_drop_X.py [name of original fasta][name of new fasta alignment] [threshold value between 1 and 0] > logfile.txt
+
+# I reimported those into Geneious, concatenated them and made the charactersets file by hand in excel. 
+
+# on the HPC, i ran it like this for unpartitioned. 
+#unpartitioned
+#iqtree -s todi101_busco8068_concat.phylip -m Q.bird -B 1000 -T 64
+
+# I tried to do it partitioned this way but it was going to take 3 years to do model selection and merging. Keeping it here just in case anyone is interested. 
+#iqtree -s todi101_busco8068_concat.phylip -p todi101_busco8068_partitions.nex -m MFP+MERGE --merge-model Q.bird -rclusterf 10 -B 1000 -T 64
+
+# partitioned with a range of rate categories and protein mixture models without merging
+iqtree -s Todi109_Busco8012_filtered.phy -p todi109-Busco8012-partitions.nex -mset Q.bird -B 1000 -T 64
+
+# then to calculate site concordance factors, I dropped all the tips from the phylogeny and alignment files that weren't going to be in my 34 tip dataset in R with ape and phytools. the input files for this section are in the datasets.zip file in datasets/03_BUSCOs/concordance-factors/ 
+# this is the code I calculated the site concordance factors with: 
+iqtree -te todi109.busco8012.iqtree.reduced34.tre -s Todi109_Busco8012_filtered_reduced34.phy --scfl 1000 --prefix concord_busco -blfix -m LG+I+G
+
+
+# now gene trees. I knew that i was going to need more than 20 Parsimony informative sites for the gene trees, so before i estimated the gene trees in IQtree, I first filtered by 20 PI sites. The output file from the partitioned dataset indicates the parsimony informative sites in each partition. I copy and pasted that information into a csv file (BUSCO_X0.5_parsInfor20_PIsites.csv in the datasets.zip) to get a list of loci that had less than 20 PI sites. I literally just moved them into a different folder in a simple shell script. Then I made a sample list of all the loci in my directory (i.e., 4155.list.txt), Then i ran this code on an HPC using parallel 
+
+cat $src/4155.list.txt | env_parallel -j 2 --sshloginfile $src/node_list_${SLURM_JOB_ID} \
+        'iqtree -s $src/F_ambig_dropp0.5_parsInfor21/{} -T 8 -B 1000 -mset Q.bird'
+
+# to get a file for ASTRAL, i moved all the .tree files from that directory into another. Then I catted all the tree files together. This was input into ASTRAL. To set a different filtering scheme, i just looked at the BUSCO_X0.5_parsInfor20_PIsites.csv file and moved the output trees into another directory and catted those into a tree file. Those files are also on dryad. 
+
+# to calculate gene tree concordance factors, on an HPC I ran this code after dropping tips from each of the gene trees in R. The files to do this are in the datasets.zip folder structure. 
+iqtree -t todi109.busco8012.iqtree.reduced34.tre --gcf todi34_4155gene-trees.trees --prefix busco.concord
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

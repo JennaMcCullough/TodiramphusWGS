@@ -1,0 +1,761 @@
+#Code overview for  SNPS from McCullough et al. 2025
+#Written by Jenna McCullough 17 April 2025 
+
+#This document is a general overview of the code I used to extract SNPs from the final .bam files. The Dryad repository has a datasets.zip file that has many of the final output files described here. 
+
+# these steps were done on an HPC in a conda environment and uses GNU parallel to do multiple samples at once (hence the lines that start with "cat "). This was helpful because i could control the number of cores allocated to each analysis. 
+
+src=$SLURM_SUBMIT_DIR
+# todChl.scaffolds.full_mask.fa is the reference genome from Eliason et al. 2022 
+reference=${src}/reference-genome/todChl.scaffolds.full_mask.fa
+
+# see how i get to the the dedup.bam files from the RawReads-to-bams.txt file. 
+
+# realign Indels 
+cat $src/sample_list.txt | env_parallel -j 2 --sshloginfile ./node_list_${SLURM_JOB_ID} \
+	    'gatk -Xmx22g -T RealignerTargetCreator -R ${reference} \
+        -I $src/bams/{}_dedup.bam \
+        -o $src/bams/ug/{}_realign.intervals'
+
+cat $src/sample_list.txt | env_parallel -j 2 --sshloginfile $./node_list_${SLURM_JOB_ID} \
+	    'gatk -Xmx44g -T IndelRealigner -R ${reference}.fna \
+          -targetIntervals $src/bams/ug/{}_realign.intervals \
+          -I $src/bams/{}_dedup.bam \
+          -o $src/bams/ug/{}_realign.bam'
+  
+    
+# and make sure that there are appropriate read groups. This isn't an issue for BUSCO or SNP datasets but if RGSM isn't unique, all the SNPs from multiple samples will be considered the same sample. 
+
+#cat $src/sample_list.txt | env_parallel -j 8 --sshloginfile ./node_list_${SLURM_JOB_ID} \
+echo    'picard AddOrReplaceReadGroups \
+         I=$src/bams/{}_realign.bam \
+         O=$src/bams/{}.rename.bam \
+         RGID={} \
+         RGLB={} \
+         RGPL=ILLUMINA \
+         RGPU=unit1 \
+         RGSM={}
+        echo {}
+      samtools view -H $src/bams_all/{}.rename.bam | grep '^@RG' ' 
+
+
+# Use a scatter gather approach to get SNPs with Unified Genotyper. This program does not work with GATK 4 so you need to use GATK 3. 
+
+#first make a list of intervals from the reference genome. I did this in the directory of my reference genome
+cut -f 1 ${reference}.fna.fai > $src/intervals.list
+
+# it produces a file that has a bunch of intervals named with numbers that vary in size. UG calls SNPs within that interval for all the samples at once (i.e., if you have 100 samples listed in the bams.list file, it makes a single file for SNPs for all those samples in that single interval). Then once all the intervals are done, they are pieced into a final SNP file. 
+
+# unified genotyper only uses one core but we need enough memory. This was sometimes a struggle. Note that the 55 here is referencing the number of intervals being processed at once. 
+
+# here, I am showing the code to get variants only, which is the dataset for which we inferred phylogenetic trees. I will show it again later when getting invariant sites for Pixy. 
+
+cat $src/reference-genome/intervals.list | env_parallel -j 55 --sshloginfile $src/node_list_${SLURM_JOB_ID} \
+echo    'gatk -Xmx18g -T UnifiedGenotyper -R ${reference} \
+          -I $src/bams/bams.list \
+          -ploidy 2 -glm SNP \
+          -L {} \
+          --output_mode EMIT_VARIANTS_ONLY \
+          -o $src/combined_vcfs/intervals_ug/{}_genotyped.vcf.gz'
+
+#any of the intervals that do not finish in the 48 hour wall time ( a requirement for the HPC I was analyzing these data on) will need to be split up into chunks. If you do not have an issue with walltimes, this is probably not necessary. 
+
+# Here is an example of the bane of my existence, interval 71. It was a huge interval of ~68 million bp long. Here, I am splitting it up into four chunks that will be able to be completed quicker. It is based on the RELATIVE position within the interval, not within the genome. 
+# make sure you copy and paste the exact type of dash for between the start and stop positions from the website because that threw me for a loop at first. 
+# Website on structure of interval list: https://gatk.broadinstitute.org/hc/en-us/articles/360035531852-Intervals-and-interval-lists
+
+# to get this information for the length of the intervals, look in the .dict file for the  genome, the intervals are in the second column (SN:1) and then the length of the interval is third: (LN:1267). 
+
+#interval 71 is like this: 
+SN:71   LN:68416949
+
+#to break it up into four parts, I made the intervals file, called interval.71.4parts.list, look like this. though note that there are no headers and no final empty line at the bottom. 
+71:1-17104238
+71:17104239-34208474
+71:34208475-51312711
+71:51312712-68416949
+
+# so instead of calling this in the top line
+# cat $src/reference-genome/intervals.list 
+# you change the interval list to do 
+cat $src/reference-genome/interval.71.4parts.list
+
+# so once all the intervals are done (which is clear when every interval has two resulting files. Here are some examples of what the output files look for normal intervals (74) and some of 71's files: 
+74_genotyped.vcf.gz.tbi
+74_genotyped.vcf.gz
+71:17104239-34208474_genotyped.vcf.gz.tbi
+71:17104239-34208474_genotyped.vcf.gz
+71:34208475-51312711_genotyped.vcf.gz.tbi
+71:34208475-51312711_genotyped.vcf.gz
+
+# Now Make a file with a list of paths for GatherVcfs to use
+# the structure of the file should be paths like below. Note that there is no header or final blank line. Also it needs to be in numerical order but i have examples out of order for this file. 
+combined_vcfs/intervals_ug_/1_genotyped.vcf.gz
+combined_vcfs/intervals_ug_/2_genotyped.vcf.gz
+combined_vcfs/intervals_ug_/74_genotyped.vcf.gz
+combined_vcfs/intervals_ug_/71:17104239-34208474_genotyped.vcf.gz 
+
+
+#gather VCFs is available through GATK 4 so make sure you are now using that version. 
+# Run GatherVcfs
+gatk GatherVcfs \
+    -I $src/combined_vcfs/scatter-gather-list.txt \
+    -O $src/combined_vcfs/combined_vcf_ug.vcf.gz
+
+# Index the gathered VCF
+gatk IndexFeatureFile \
+     -I $src/combined_vcfs/combined_vcf_ug.vcf.gz
+
+# Select and filter variants
+gatk SelectVariants \
+     -R ${reference} \
+     -V $src/combined_vcfs/combined_vcf_ug.vcf.gz \
+     -select-type SNP \
+     -O $src/combined_vcfs/raw_snps_ug.vcf.gz
+
+#gatk VariantFiltration \
+     -R ${reference} \
+     -V $src/combined_vcfs/raw_snps_ug.vcf.gz \
+     -O $src/analysis_vcfs/filtered_snps_ug.vcf  \
+     -filter "DP < 4" --filter-name "DP_filter" \
+     -filter "QUAL < 30.0" --filter-name "Q_filter" \
+     -filter "QD < 2.0" --filter-name "QD_filter" \
+     -filter "FS > 60.0" --filter-name "FS_filter" \
+     -filter "MQ < 40.0" --filter-name "MQ_filter"
+ "
+
+#We are going to only keep variants that have been successfully genotyped in 50% of individuals, a minimum quality score of 30, and a minor allele count of 3.
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug.vcf --max-missing 0.5 --mac 3 --minQ 30 --recode --recode-INFO-all --out $src/analysis_vcfs/filtered_snps_ug.g5mac3
+
+#This command will recode genotypes that have less than 3 reads
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug.g5mac3.recode.vcf --minDP 3 --recode --recode-INFO-all --out $src/analysis_vcfs/filtered_snps_ug.g5mac3dp3 
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug.g5mac3dp3.recode.vcf --missing-indv
+
+# that last line gave a file called out.imiss that showed the frequency of missingness each sample had. Using that, i decided to do a cutoff of .5. But i want to go back to the original VCF to remove them prior to doing more stringent filtering steps so my higher cutoffs aren't being affected by these bad samples. This is how i chose what samples to drop, denoted in table S1. 
+
+# let's put the cutoff for samples i am not using at 0.5 for missingness. I made a text file with the samples as a text file that I wanted to drop. 
+
+mawk '$5 > 0.5' $src/analysis_vcfs/todi125-per-sample-missingness.txt | cut -f1 > $src/analysis_vcfs/todi125-samples-to-drop.txt
+
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug.vcf \
+        --remove $src/analysis_vcfs/todi125-samples-to-drop.txt \
+        --recode --recode-INFO-all --out $src/analysis_vcfs/filtered_snps_ug_todi119.vcf
+         
+# this outputs filtered_snps_ug_todi119.vcf.recode.vcf
+mv $src/analysis_vcfs/filtered_snps_ug_todi119.vcf.recode.vcf $src/analysis_vcfs/filtered_snps_ug_todi119.vcf
+
+# now i can apply more stringent filters for max missingness. I'm particularly interested in what my 100% complete matrix would be 
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug_todi119.vcf --max-missing 1.0 --mac 3 --minQ 30 --minDP 3 --recode --recode-INFO-all --out $src/analysis_vcfs/todi119.nomissing.g5mac3dp3
+
+# Compared to something like... 90% threshold? 90% of all samples must have data at each site. 
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug_todi119.vcf --max-missing 0.9 --mac 3 --minQ 30 --minDP 3 --recode --recode-INFO-all --out $src/analysis_vcfs/todi119.90per.g5mac3dp3
+
+#now how many are missing from sites? 
+vcftools --vcf $src/analysis_vcfs/todi119.90per.g5mac3dp3.recode.vcf --missing-indv --out $src/analysis_vcfs/todi119.90per.g5mac3dp3.PerSampMiss
+
+
+# I want to thin the 100% and 90% complete matricies to only have one SNP per 10,000 bases 
+vcftools --vcf $src/analysis_vcfs/todi119.90per.g5mac3dp3.recode.vcf --thin 10000 --recode --recode-INFO-all --out $src/analysis_vcfs/todi119.90per.g5mac3dp3.10kb
+vcftools --vcf $src/analysis_vcfs/todi119.nomissing.g5mac3dp3.recode.vcf --thin 10000 --recode --recode-INFO-all --out $src/analysis_vcfs/todi119.nomissing.g5mac3dp3.10kb
+vcftools --vcf $src/analysis_vcfs/todi119.nomissing.g5mac3dp3.recode.vcf --thin 5000 --recode --recode-INFO-all --out $src/analysis_vcfs/todi119.nomissing.g5mac3dp3.5kb
+
+# Now i want to filter this 100% matrix with a SNP every 5K bp further to only include bi-allelic SNPs. using the bcftools options -m2 and -M2 which set both the minimum (-m) and maximum (-M) number of alleles to 2.
+# I'm following this tutorial: https://github.com/mmatschiner/tutorials/blob/master/species_tree_inference_with_snp_data/README.md
+# I actually want to do the bi-allelic filter prior to filtering every certain distance... 
+bcftools view -e 'AC==0 || AC==AN || F_MISSING > 0.2' -m2 -M2 -o $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.vcf $src/analysis_vcfs/todi119.nomissing.g5mac3dp3.recode.vcf
+#now i will filter every 5K bp. 
+vcftools --vcf $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.vcf --thin 5000 --recode --recode-INFO-all --out $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.5kb
+mv $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.5kb.recode.vcf  $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.5kb.vcf
+
+# we are going to come back to this file to discuss heterozygosity below 
+
+# I want versions with and without outgroups 
+vcftools --vcf $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.5kb.vcf \
+        --remove $src/analysis_vcfs/todi119-drop-outgroups.txt \
+        --recode --recode-INFO-all --out $src/analysis_vcfs/todi115.nomissing.g5mac3dp3BA2.5kb
+mv $src/analysis_vcfs/todi115.nomissing.g5mac3dp3BA2.5kb.recode.vcf  $src/analysis_vcfs/todi115.nomissing.g5mac3dp3BA2.5kb.vcf
+
+# this is for the splitstree, where i wanted to see what it looked like without the nigrocyaneus and australasia clades because their branch lengths are really really long. 
+vcftools --vcf $src/analysis_vcfs/todi115.nomissing.g5mac3dp3BA2.5kb.vcf \
+        --remove $src/analysis_vcfs/todi92-drop-samples.txt \
+        --recode --recode-INFO-all --out $src/analysis_vcfs/todi92.nomissing.g5mac3dp3BA2.5kb
+mv $src/analysis_vcfs/todi92.nomissing.g5mac3dp3BA2.5kb.recode.vcf  $src/analysis_vcfs/todi92.nomissing.g5mac3dp3BA2.5kb.vcf
+
+######################### TREE BUILDING #########################
+
+# This is where i used "covert_vcf_to_nexus.rb" script, which is a ruby script available in the specific_scripts directory. I ran that through a conda environment on a linux computer. If you want to just skip to this step, these data files are on the dryad respository in the "datasets.zip" file. there is a folder structure where these files will be. 
+
+
+# IQtree
+# i first ran it like this: 
+iqtree -s todi119.nomissing.g5mac3dp3BA2.5kb-alignment.nex -m GTR+ASC -alrt 1000 -T 64 -B 1000
+# then IQtree output a variant sites only file, so i paused the tree search and then ran this instead with the output file. Both are on the Dryad repository. 
+iqtree -s todi119.nomissing.g5mac3dp3BA2.5kb-alignment.nex.varsites.phy -m GTR+ASC -alrt 1000 -T 64 -B 1000
+
+
+# SVDquartets 
+# This was done in PAUP* and you can have the commands at the bottom of the file. The file that I ran is in the Dryad. Here is the commands that are at the bottom of that file after the genetic data and taxpartition sets. 
+
+begin paup;
+	outgroup species.ceyx_argentatus;
+SVDQuartets evalQuartets=all speciesTree partition=species bootstrap=standard nreps=1000 nthreads=15;
+SaveTrees file='todi119_100per_5kb_svd-1000bs.tre' supportValues=nodeLabels;
+log stop;
+
+
+# splitstree figures. This was done with the "convert-to-distance-matrix.R" file. I dropped some samples and renamed them in that file, then made a pairwise divergence matrix among all samples. Then you just drag that file, todi92.nomissing.g5mac3dp3BA2.5kb.txt, into the Splitstree GUI. 
+
+
+######################### ABBA-BABA WITH DSUITE #########################
+  
+# when it comes to code for Dsuite, its very straightforward to run. All I really did was drop individuals from the phylogeny and denoted in the popmap files the code to not analyze them (see the popmap file in datasets/03_SNPs/Dsuite folder) This is the code for plotting in R afterwards though. To be able to quickly sort through the FDR stats that are not significant, i plotted them in blue and then when editing them in illustrator, i deleted the non-significant values.
+
+# This is for the sanctus subset, which had 29 tips (supplemental fig. 21) 
+library(phytools)
+library(ape)
+library(ggplot2)
+library(dplyr)
+# making a manual hetmap of Dstatistics using R  
+#read in file
+bbaa<-read.table("G_85Ksnps-29tips-sacer-sanctus/119_top1_sanctus_BBAA.txt", header = T)
+
+#if ABBA is always > BABA, then inferred gene flow is always between P2 and P3
+table(bbaa$ABBA>bbaa$BABA)
+bbaa[bbaa$ABBA<=bbaa$BABA,]
+
+#open empty df to hold results
+df<-data.frame(P2=c(),P3=c(),Dmin=c(),p=c())
+#for loop over each value of P2
+for (i in 1:length(plot.order)){
+  #for loop over each value of P3
+  for (j in 1:length(plot.order)){
+    #record most significant p-value for the given comparison
+    min.p<-min(bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]])
+    if(min.p == Inf){
+      min.p<- NA
+      sig.D<- NA
+      sig.f4<-NA
+    }
+    else{
+      #record the most significant D statistic for the comparison
+      #sig.D<-bbaa$Dstatistic[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]] == min.p]
+      #sig.f4<-bbaa$f4.ratio[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]] == min.p]
+      sig.D<-max(bbaa$Dstatistic[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]] == min.p])
+      sig.f4<-max(bbaa$f4.ratio[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]] == min.p])
+    }
+    
+    #write info to df
+    df<-rbind(df,c(plot.order[i],plot.order[j],sig.D,sig.f4,min.p))
+  } #close for loop over P3
+} #close for loop over P2
+
+#fix column names
+colnames(df)<-c("P2","P3","sig.D","sig.f4","min.p")
+#make columns numeric
+df$min.p<-as.numeric(df$min.p)
+df$sig.D<-as.numeric(df$sig.D)
+df$sig.f4<-as.numeric(df$sig.f4)
+
+#reorder factors
+df$P2<-factor(df$P2, levels=plot.order)
+df$P3<-factor(df$P3, levels=plot.order)
+
+#plot D as a heatmap
+ggplot(data = df, aes(x=P2, y=P3, fill=sig.D)) + 
+  geom_tile(color = "black", size=.1)+
+  geom_text(data=df,aes(label=round(sig.D, 2)))+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="D",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="minP-D-large.pdf", height = 40, width=40)  
+#dev.off()
+
+#plot p-val as a heatmap (must be -log transformed to be informative)
+ggplot(data = df, aes(x=P2, y=P3, fill=-log(min.p))) + 
+  geom_tile(color = "black", size=.1)+
+  geom_text(data=df,aes(label=round(-log(min.p), 0)))+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="-log p",) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1))
+#pdf(file="minP-D-large.pdf", height = 40, width=40)  
+#dev.off()
+
+### this code will get you the vector needed to combine two sets of pairwise values into a single vector that splits a heatmap at the diagonal
+#define n as the number of taxa used in your pairwise Fst comparison
+
+#this will change with different number of taxa
+n<-29  # 29 for the species/sanctus dataset 
+
+i<-1 #always begin incrementer (i) at 1
+x<-c() #always begin with an empty vector
+#while loop that will make the appropriate vector and store it in the variable 'x'
+while (i < n){
+  #the first set of numbers is simply 2:n
+  if(i == 1){
+    x<-c(2:n)
+    i=i+1
+  }
+  #the second set of numbers is (2+n+1):(2*n) which we add to the existing vector
+  if(i == 2){
+    x<-c(x,(2+n+1):(2*n))
+    i=i+1
+  }
+  
+  if(n == 3){break} #handle the edge case where n=3 and the code proceeds to the next step even though it is in violation of the outside while loop, because it tests all internal statements before looping back to the top to test the while loop condition
+  
+  #we then add (2+((i-1)*(n+1))):(i*n) to the vector, where i=3, incrememnt i by 1, and continue adding this vector to the growing vector until i = n-1
+  if(i > 2){
+    x<-c(x,(2+((i-1)*(n+1))):(i*n))
+    i=i+1
+  }
+}
+
+#order your Fst and fixed difference values correctly in a single mixed vector to plot the Fst values above and # of fixed differences below the diagonal in the heatmap, using the vector you just created (named 'x')
+df$value<-df$min.p
+df$value[x]<-round(df$sig.D, 2)[x]
+
+# variable for number of total abba/baba comparisons
+## number of obs in bbaa object
+num_comps <- 3654
+
+str(df)
+#make a binary variable for whether the p-value is significant at an FDR cutoff
+df_fdr <- df %>%
+  mutate(sig.FDR = case_when(min.p < (0.05/num_comps) ~ 1,
+                             min.p >= (0.05/num_comps) ~ 0))
+#View(df)
+table(df_fdr$sig.FDR == 1)
+
+#turn off scientific notation
+options(scipen = 100, digits = 4)
+
+
+
+#plot with D
+ggplot(data = df_fdr, aes(x=P2, y=P3, fill=sig.D)) + 
+  geom_tile(color = "black", size=.2)+
+  #geom_text(data=df_fdr,aes(label=signif(value, 2)), size=2.25)+
+  geom_text(data=df_fdr,aes(label=round(sig.D,2), color=sig.FDR), size=2)+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="p-value",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="D-medium-bluemeansSignificant.pdf", height = 5, width=8)  
+#dev.off()
+
+# plot F4 
+ggplot(data = df_fdr, aes(x=P2, y=P3, fill=sig.f4)) + 
+  geom_tile(color = "black", size=.2)+
+  #geom_text(data=df_fdr,aes(label=signif(value, 2)), size=2.25)+
+  geom_text(data=df_fdr,aes(label=round(sig.f4,2), color=sig.FDR), size=2)+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="F4ratio",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="F4-sigD-medium-bluemeansFDRSignificant.pdf", height = 5, width=8)  
+#dev.off()
+
+ggplot(data = df, aes(x=P2, y=P3, fill=-log(min.p))) + 
+  geom_tile(color = "black", size=.5)+
+  geom_text(data=df,aes(label=round(value, 2)), size=2.25)+
+  theme_minimal()+
+  scale_fill_gradient(low="lightblue", high = "white", space = "Lab", name="p-value",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+
+#ggsave("03_pval.pdf", pval, width = 15,height = 12,units = "in")
+
+#plot as heatmap colored by D statistic
+ggplot(data = df, aes(x=P2, y=P3, fill=sig.D)) + 
+  geom_tile(color = "black", size=.5)+
+  geom_text(data=df,aes(label=round(value, 2)), size=2.25)+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="p-value",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+
+#ggsave("05_Dstat.pdf", dstats, width = 15,height = 12,units = "in")
+
+
+#
+##
+### Try a different approach here, find minimum pairwise D statistic instead of minimum pairwise p-value
+### This is a more conservative (not necessarily more informative) approach
+##
+#
+
+#open empty df to hold results
+df<-data.frame(P2=c(),P3=c(),Dmin=c(),p=c())
+#for loop over each value of P2
+for (i in 1:length(plot.order)){
+  #for loop over each value of P3
+  for (j in 1:length(plot.order)){
+    #record most significant p-value for the given comparison
+    min.d<-min(bbaa$Dstatistic[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]])
+    if(min.d == Inf){
+      min.d<- NA
+      max.p<- NA
+      max.f4<-NA
+    }
+    else{
+      #record the most significant D statistic for the comparison
+      #sig.D<-bbaa$Dstatistic[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]] == min.p]
+      #sig.f4<-bbaa$f4.ratio[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]] == min.p]
+      max.p<-max(bbaa$p.value[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][which.min(bbaa$Dstatistic[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]])])
+      max.f4<-max(bbaa$f4.ratio[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]][which.min(bbaa$Dstatistic[bbaa$P2 == plot.order[i] & bbaa$P3 == plot.order[j] | bbaa$P3 == plot.order[i] & bbaa$P2 == plot.order[j]])])
+    }
+    
+    #write info to df
+    df<-rbind(df,c(plot.order[i],plot.order[j],min.d,max.f4,max.p))
+  } #close for loop over P3
+} #close for loop over P2
+
+#fix column names
+colnames(df)<-c("P2","P3","sig.D","sig.f4","min.p")
+#make columns numeric
+df$min.p<-as.numeric(df$min.p)
+df$sig.D<-as.numeric(df$sig.D)
+df$sig.f4<-as.numeric(df$sig.f4)
+
+#reorder factors
+df$P2<-factor(df$P2, levels=plot.order)
+df$P3<-factor(df$P3, levels=plot.order)
+
+#plot D as a heatmap
+ggplot(data = df, aes(x=P2, y=P3, fill=sig.D)) + 
+  geom_tile(color = "black", size=.1)+
+  geom_text(data=df,aes(label=round(sig.D, 2)))+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="D",) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1))
+#pdf(file="minP-D-large.pdf", height = 40, width=40)  
+#dev.off()
+
+#plot p-val as a heatmap (must be -log transformed to be informative)
+ggplot(data = df, aes(x=P2, y=P3, fill=-log(min.p))) + 
+  geom_tile(color = "black", size=.1)+
+  geom_text(data=df,aes(label=round(-log(min.p), 0)))+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="-log p",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="minP-D-large.pdf", height = 40, width=40)  
+#dev.off()
+
+#make a binary variable for whether the p-value is significant at an FDR cutoff
+df_fdr <- df %>%
+  mutate(sig.FDR = case_when(min.p < (0.05/num_comps) ~ 1,
+                             min.p >= (0.05/num_comps) ~ 0))
+#View(df)
+table(df_fdr$sig.FDR == 1)
+
+#turn off scientific notation
+options(scipen = 100, digits = 4)
+
+#plot with F4
+ggplot(data = df_fdr, aes(x=P2, y=P3, fill=sig.FDR)) + 
+  geom_tile(color = "black", size=.2)+
+  #geom_text(data=df_fdr,aes(label=signif(value, 2)), size=2.25)+
+  geom_text(data=df_fdr,aes(label=round(sig.f4,2), size=0.5))+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="p-value",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="D-Pval-large.pdf", height = 40, width=40)  
+#dev.off()
+
+#plot D but have the text color be relative to whether it is statistically sig 
+ggplot(data = df_fdr, aes(x=P2, y=P3, fill=sig.D)) + 
+  geom_tile(color = "black", size=.2)+
+  #geom_text(data=df_fdr,aes(label=signif(value, 2)), size=2.25)+
+  geom_text(data=df_fdr,aes(label=round(sig.D,2), color=sig.FDR), size=2)+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="p-value",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="G_minD-bluetextmeansFDRsig-large.pdf", height = 5, width=8)  
+#pdf(file="B_minD-bluetextmeansFDRsig.pdf", height = 5, width=8)  
+#pdf(file="D_minD-bluetextmeansFDRsig.pdf", height = 12, width=12)  
+#dev.off()
+
+
+#plot labeled by D stat instead of F4
+ggplot(data = df_fdr, aes(x=P2, y=P3, fill=sig.FDR)) + 
+  geom_tile(color = "black", size=.2)+
+  #geom_text(data=df_fdr,aes(label=signif(value, 2)), size=2.25)+
+  geom_text(data=df_fdr,aes(label=round(sig.D,2), size=0.5))+
+  theme_minimal()+
+  scale_fill_gradient(low="white", high = "red", space = "Lab", name="p-value",) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(angle = 0, hjust = 1))
+#pdf(file="D-Pval-large.pdf", height = 40, width=40)  
+#dev.off()
+
+#ggsave("03_pval.pdf", pval, width = 15,height = 12,units = "in")
+
+
+
+
+######################### HETEROZYGOSITY #########################
+
+# Now, I'd originally wanted to get heterozygosity from todi119.nomissing.g5mac3dp3BA2.5kb.vcf to get a sense as to why some ABBA-BABA tests were having long swaths of statistically significant comparisons. Is it a bottleneck from small population sizes? This next section was performed on an HPC. 
+
+#Here is the quick and dirty way of getting heterozygosity from the vcf file. 
+vcftools --vcf $src/analysis_vcfs/filtered_snps_ug.g5mac3dp3.recode.vcf
+# get homozygosity to then calculate heterozygosity  (total minus homozygous)
+vcftools --vcf $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2.vcf --het --out $src/analysis_vcfs/todi119.nomissing.g5mac3dp3BA2
+
+#there's issues with this approach. So i also did this whole thing with Pixy too. the issue is that Pixy requires variant and invariant sites again, so we need to go back to Unifiedgenotyper again and use the scatter gather approach! Woo! Exciting right? If you had issues with walltimes when it was just working with variant sites only, it is much worse when its outputting variant and invariant sites. 
+
+# note the different output mode flag. 
+#cat $src/reference-genome/interval.list | env_parallel -j 4 --sshloginfile $src/node_list_${SLURM_JOB_ID} \
+    'gatk -Xmx22g -T UnifiedGenotyper -R ${reference} \
+          -I $src/bams/bams.list \
+          -ploidy 2 -glm SNP \
+          -L {} \
+          --output_mode EMIT_ALL_SITES \
+          -o $src/combined_vcfs/intervals_ug_all-var/{}_genotyped.vcf.gz'
+    
+#now do the GatherVcfs and IndexFeatureFile commands. I didn't filter this file the same way but did this: 
+vcftools --gzvcf $src/combined_vcfs/combined_vcf_ug_invar.vcf.gz --remove-indels --remove-filtered-all --min-meanDP 4 --max-meanDP 30 --recode --stdout | bgzip -c > src/analysis_vcfs/E_pixy-het/pixy_input.vcf.gz
+tabix $src/analysis_vcfs/pixy-het/pixy_input.vcf.gz
+
+#now you can run pixy! I had multiple samples for some taxa, so i had to make a popmap not by individual but by subspecies where these were lumped. This took a lot of computational power. 
+pixy --stats pi \
+     --vcf $src/analysis_vcfs/pixy-het/pixy_input.vcf.gz \
+     --window_size 50000 \
+     --populations $src/analysis_vcfs/pixy-het/popmap_subsp.txt \
+     --output_folder $src/analysis_vcfs/pixy-het/pixy_sub \
+     --output_prefix pixy_subsp \
+     --n_cores 64
+__________________________________________________________________________________________
+# The next steps are in R. I wanted to get a general metric of average Pi across the windows from the output of the above code, pixy_subsp_pi.txt 
+
+# this first pass is for when the data is not filtered. 
+sample_col <- "pop"
+
+# Split the dataframe by the sample names
+data_list <- split(data, data[[sample_col]])
+
+# Optionally, save each individual dataframe into separate variables in the global environment
+#list2env(data_list, envir = .GlobalEnv)
+
+# To check the output:
+# names(data_list) gives you the unique sample names
+# Access individual dataframes with data_list[["SampleName"]] or directly by their variable names in the environment
+
+#data_list[["albicilla_orii_UWBM_85104"]]
+
+# Function to summarize data for a single dataframe
+summarize_chromosome <- function(df) {
+  df %>%
+    group_by(chromosome) %>%
+    summarize(
+      ratio = sum(count_diffs, na.rm = TRUE) / sum(count_comparisons, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+# Apply the function to all datasets and add the population name as a column
+summary_list <- lapply(names(data_list), function(pop) {
+  data_list[[pop]] %>%
+    summarize_chromosome() %>%
+    mutate(pop = pop)
+})
+
+
+# Combine all summaries into a single dataframe
+summary_table <- bind_rows(summary_list)
+
+# Pivot the table to have chromosomes as columns and pop as rows
+final_table <- summary_table %>%
+  pivot_wider(names_from = chromosome, values_from = ratio, names_prefix = "Chromosome_")
+
+
+
+# Combine all summaries into a single dataframe
+summary_table <- bind_rows(summary_list)
+
+# Pivot the table to have chromosomes as columns and pop as rows
+final_table <- summary_table %>%
+  pivot_wider(names_from = chromosome, values_from = ratio, names_prefix = "Chromosome_")
+
+# Add NaN_count and percent_Na columns
+final_table <- final_table %>%
+  rowwise() %>%
+  mutate(
+    NaN_count = sum(is.na(c_across(starts_with("Chromosome_")))),
+    percent_Na = NaN_count / 7734
+  ) %>%
+  ungroup()
+
+# Reorder columns to place NaN_count as the second column
+final_table <- final_table %>%
+  relocate(NaN_count, .after = pop) %>%
+  relocate(percent_Na, .after = NaN_count)
+
+head(final_table)
+#write.csv(final_table, "Pixy/sub_pi_final_table.csv", row.names = FALSE)
+
+
+# Create a new dataframe with the required calculations
+summary_stats_table <- final_table %>%
+  # Exclude NaN_count and percent_Na from averaging
+  select(-NaN_count, -percent_Na, -pop) %>%
+  rowwise() %>%
+  mutate(
+    average = mean(c_across(starts_with("Chromosome_")), na.rm = TRUE),
+    std_dev = sd(c_across(starts_with("Chromosome_")), na.rm = TRUE),
+    min_value = min(c_across(starts_with("Chromosome_")), na.rm = TRUE),
+    max_value = max(c_across(starts_with("Chromosome_")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Combine the calculated columns with pop, NaN_count, and percent_Na
+final_summary_table <- final_table %>%
+  select(pop, NaN_count, percent_Na) %>%
+  bind_cols(summary_stats_table %>%
+              select(average, std_dev, min_value, max_value))
+
+# View the final summary table
+print(final_summary_table)
+#write.csv(final_summary_table, "Pixy/sub_pi_final_summary__table.csv", row.names = FALSE)
+
+
+
+
+# Visualizing pi along the chromosome
+# Load ggplot2 for visualization
+
+
+# Select the sample row to plot
+sample_row <- final_table %>%
+  filter(pop == "sacer_vitiensis_KU_122437") # Replace "Pop1" with the desired sample name
+
+# Prepare the data for plotting
+plot_data <- sample_row %>%
+  pivot_longer(
+    cols = starts_with("Chromosome_"),
+    names_to = "Chromosome",
+    values_to = "avg_pi"
+  ) %>%
+  mutate(Chromosome = as.numeric(gsub("Chromosome_", "", Chromosome))) # Extract chromosome number
+
+# Plot avg_pi vs Chromosome
+ggplot(plot_data, aes(x = Chromosome, y = avg_pi)) +
+  geom_line(color = "blue") +          # Add a line connecting points
+  geom_point(color = "red") +         # Add points for each chromosome
+  labs(
+    title = paste("Average Pi across Chromosomes for", sample_row$pop),
+    x = NULL, # Remove x-axis label
+    y = "Average Pi"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), # Remove x-axis text
+        axis.ticks.x = element_blank()) # Remove x-axis ticks
+
+# ok I don't like that there's a random one that has a huge peak. its clearly an artefact. # i want to remove them because there's just random samples that have one window with a pi of 1. 
+## get a table that reports how many chromosomes have an average of 1 
+# Count the number of 1's in each row from columns 4 to 7737
+result <- final_table %>% 
+  mutate(ones_count = rowSums(.[, 4:7737] == 1, na.rm = TRUE)) %>% 
+  select(pop, ones_count)
+
+# how many samples have 1's?
+View(result)
+
+# dropping the 1's
+final_table_v2 <- final_table
+final_table_v2[, 4:7737][final_table_v2[, 4:7737] == 1] <- NA
+
+#ok now going to plot the same one (using sacer vitiensis as an example)
+# scroll lower because i will then generate plots for all of them 
+
+sample_row <- final_table_v2 %>%
+  filter(pop == "sacer_vitiensis_KU_122437") # Replace with the desired sample name
+
+# Prepare the data for plotting
+plot_data <- sample_row %>%
+  pivot_longer(
+    cols = starts_with("Chromosome_"),
+    names_to = "Chromosome",
+    values_to = "avg_pi"
+  ) %>%
+  mutate(Chromosome = as.numeric(gsub("Chromosome_", "", Chromosome))) # Extract chromosome number
+
+
+x <- ggplot(plot_data, aes(x = Chromosome, y = avg_pi)) +
+  geom_line(color = "blue") +          # Add a line connecting points
+  geom_point(color = "red") +         # Add points for each chromosome
+  labs(
+    title = paste("Average Pi across Chromosomes for", sample_row$pop),
+    x = NULL, # Remove x-axis label
+    y = "Average Pi"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), # Remove x-axis text
+        axis.ticks.x = element_blank()) # Remove x-axis ticks
+# an example to make sure the 1's are removed 
+#pdf("sacer_vitiensis_KU_122437_avgPi-no1.pdf", width=6.5, height = 4)
+#x
+#dev.off()
+
+
+# Generate plots for each row
+
+for (i in 1:nrow(final_table_v2)) {
+  sample_row <- final_table_v2[i, ]
+  plot_data <- sample_row %>% 
+    pivot_longer(
+      cols = 4:7737, 
+      names_to = "Chromosome", 
+      values_to = "avg_pi"
+    ) %>% 
+    mutate(Chromosome = as.numeric(gsub("Chromosome_", "", Chromosome)))
+  
+  p <- ggplot(plot_data, aes(x = Chromosome, y = avg_pi)) +
+    geom_line(color = "blue") +
+    geom_point(color = "red") +
+    labs(
+      title = paste("Average Pi across Chromosomes for", sample_row$pop),
+      x = NULL,
+      y = "Average Pi"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank())
+  
+  ggsave(filename = paste0(sample_row$pop, "_avgPi-no1.pdf"), plot = p, width = 6.5, height = 4)
+}
+
+
+#now i want to take what our final table is, average for a FINAL summary table 
+
+# Create a new dataframe with the required calculations
+summary_stats_table_v2 <- final_table_v2 %>%
+  # Exclude NaN_count and percent_Na from averaging
+  select(-NaN_count, -percent_Na, -pop) %>%
+  rowwise() %>%
+  mutate(
+    average = mean(c_across(starts_with("Chromosome_")), na.rm = TRUE),
+    std_dev = sd(c_across(starts_with("Chromosome_")), na.rm = TRUE),
+    min_value = min(c_across(starts_with("Chromosome_")), na.rm = TRUE),
+    max_value = max(c_across(starts_with("Chromosome_")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+final_summary_table_v2 <- final_table_v2 %>%
+select(pop, NaN_count, percent_Na) %>%
+  bind_cols(summary_stats_table_v2 %>%
+              select(average, std_dev, min_value, max_value))
+
+# View the final summary table
+print(final_summary_table_v2)
+#write.csv(final_summary_table, "Pixy/sub_pi_final_summary_no1s_table.csv", row.names = FALSE)
+mean(final_summary_table_v2$average)
+min(final_summary_table_v2$average)
+max(final_summary_table_v2$average)

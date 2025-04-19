@@ -1,0 +1,87 @@
+#Code overview for McCullough et al. 2025
+#Written by Jenna McCullough 17 April 2025 
+
+#This document is a general overview of the code I used to analyze the whole genome resequencing reads to the final bam files that we which we extracted molecular markers.  The raw read data is available on genbank, see Table S1 for Biosample numbers. 
+
+# To make it clearer what is code and what are my notes, I will have comments after hashtags even though this is not a formal script. 
+
+# these steps were done on an HPC in a conda environment and uses GNU parallel to do multiple samples at once (hence the lines that start with "cat "). This was helpful because i could control the number of cores allocated to each analysis. BWA can only use one core but other analyses can use more. 
+
+src=$SLURM_SUBMIT_DIR
+# todChl.scaffolds.full_mask.fa is the reference genome from Eliason et al. 2022 
+reference=${src}/reference-genome/todChl.scaffolds.full_mask.fa
+
+# indexing reference
+bwa index -p $reference ${reference}
+samtools faidx ${reference} -o ${reference}.fai
+picard CreateSequenceDictionary \
+               R=${reference} \
+               O=${reference}.dict
+
+#trimming adapters
+adapters=~/.conda/pkgs/trimmomatic-0.39-hdfd78af_2/share/trimmomatic-0.39-2/adapters/TruSeq3-PE.fa
+cat $src/sample_list.txt | env_parallel -j 8 --sshloginfile ./node_list_${SLURM_JOB_ID} \
+	'read1=$src/raw_reads/{}_1.fastq.gz
+	read2=$src/raw_reads/{}_2.fastq.gz
+	paired_r1=$src/clean_reads/{}_paired_R1.fastq.gz
+	paired_r2=$src/clean_reads/{}_paired_R2.fastq.gz
+	unpaired_r1=$src/clean_reads/{}_unpaired_R1.fastq.gz
+	unpaired_r2=$src/clean_reads/{}_unpaired_R2.fastq.gz
+	# the minimum read length accepted, we do the liberal 30bp here
+	min_length=30
+	trimmomatic PE -threads 1 \
+		$read1 $read2 $paired_r1 $unpaired_r1 $paired_r2 $unpaired_r2 \
+		ILLUMINACLIP:${adapters}:2:30:10:2:True \
+		LEADING:3 TRAILING:3 MINLEN:${min_length}'
+
+# Alignment and marking duplicates. 
+
+cat $src/sample_list.txt | env_parallel -j 1 --sshloginfile ./node_list_${SLURM_JOB_ID} \
+		'bwa mem \
+		-t 8 -M \
+		-R "@RG\tID:{}\tPL:ILLUMINA\tLB:{}\tSM:{}" \
+		$reference \
+		$src/clean_reads/{}_paired_R1.fastq.gz \
+		$src/clean_reads/{}_paired_R2.fastq.gz \
+		| samtools view -b -F 4 - > $src/alignments/{}_unsort.bam'
+
+
+#this takes a lot of memory and I had to often do individual samples to get this to work
+cat $src/sample_list.txt | env_parallel -j 1 --sshloginfile ./node_list_${SLURM_JOB_ID} \
+		'gatk --java-options "-Xmx40g" MarkDuplicatesSpark \
+         -I $src/alignments/{}_unsort.bam \
+         --tmp-dir $src/alignments/dedup_temp \
+         --conf "spark.local.dir=$src/dedup_temp/spark" \
+         --spark-master local[*] \
+         --verbosity ERROR \
+         -O $src/bams/{}_dedup.bam
+	rm $src/alignments/{}.sam'
+
+cat $src/sample_list.txt | env_parallel -j 3 --sshloginfile ./node_list_${SLURM_JOB_ID} \
+        'picard CollectAlignmentSummaryMetrics \
+                R=${reference} \
+                I=$src/bams/{}_dedup.bam \
+                O=$src/alignments/alignment_summary/{}_alignment_summary.txt
+       samtools depth \
+                -a $src/bams/{}_dedup.bam \
+                > $src/alignments/depth/{}_depth.txt'
+
+
+cd $src/alignments/depth/
+#here is an example of how i used the depth file to estimate the average depth. I didn't have a fancy way to do this, just did it by hand for every sample. 
+
+awk -v N=3 '{ sum += $3} END {if (NR .0) print sum / NR } ' winchelli_alfredi_DMNH_15327_depth.txt
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
