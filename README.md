@@ -12,8 +12,8 @@ Because the bioinformatic steps for analyzing data were performed across a mix o
 
 There are X different summary files in this repository: 
 1. RawReads-to-bams.txt: processing raw read data to producing the final bam files
-2. UCE-overview.txt
-3. BUSCO-overview.txt
+2. UCE-overview.txt: to be added 
+3. BUSCO-overview.txt: masking fastas, running BUSCO on reference, using coordinates to pull other samples, then filtering and analyses (iqtree, astral, site and gene concordance factors). 
 4. SNPs.txt: calling SNPs with UnifiedGenotyper, filtering, and analyses (phylogenetic estimation, Dsuite plotting, and heterozygosity). 
 5. MtDNA-overview.txt 
 
