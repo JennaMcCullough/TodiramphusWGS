@@ -15,5 +15,5 @@ There are X different summary files in this repository:
 2. UCE-overview.txt: to be added 
 3. BUSCO-overview.txt: masking fastas, running BUSCO on reference, using coordinates to pull other samples, then filtering and analyses (iqtree, astral, site and gene concordance factors). 
 4. SNPs.txt: calling SNPs with UnifiedGenotyper, filtering, and analyses (phylogenetic estimation, Dsuite plotting, and heterozygosity). 
-5. MtDNA-overview.txt 
+5. MtDNA-overview.txt: to be added  
 
