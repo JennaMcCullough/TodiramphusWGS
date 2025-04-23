@@ -1,0 +1,22 @@
+#Code overview for  mtDNA from McCullough et al. 2025
+#Written by Jenna McCullough 23 April 2025 
+
+#This document is a general overview of the code we used to mine mitochondrial DNA from the Illumina cleaned reads files (post-trimmomatic, see RawReads-to-bams.txt). The Dryad repository has a datasets.zip file that has many of the final output files described here. 
+
+# these steps were done on an HPC in a conda environment. 
+
+# Using mitofinder to mine MtDNA 
+# $CLEAN_READS_DIR = the directory that has your cleaned reads
+# $MITOFINDER_INPUT_DIR = the directory that has your reference genome 
+
+srun singularity run --bind $CLEAN_READS_DIR,$MITOFINDER_INPUT_DIR /projects/shared/singularity/mitofinder_v1.4.1.sif --megahit \
+    -j mitofinder_chloris_chloropterus_MCZ_178158_comb \
+    -1 $CLEAN_READS_DIR/clean_reads04/chloris_chloropterus_MCZ_178158_comb_paired_R1.fastq.gz \
+    -2 $CLEAN_READS_DIR/clean_reads04/chloris_chloropterus_MCZ_178158_comb_paired_R2.fastq.gz \
+    -r $MITOFINDER_INPUT_DIR/Todi_sanctus_NC011712.1_ref.gb \
+    --override -o 2 -p 32 -m 90
+
+# we did this for all the samples. We visualized the samples in Geneious and extracted the genes by region by hand and aligned with MUSCLE within Geneious. Some of the very low and very high coverage samples in initial ML analyses fell outside of crown Todiramphus, suggesting an incorectly mapped NUMT sequence. These samples  This is why there are some that are not in our mitochondrial dataset, see Table S1 in McCullough et al. 2025. We concatenated the 12 genes in Geneious, created the partition charsets file by hand, and then inferred the ML tree in IQtree on an HPC like so: 
+
+# mtDNA partitioned iqtree analysis 
+iqtree -s todi115-mtdna-concat.nex -p concatenated_all_partitions.nex -st DNA -T 8 -B 1000 
