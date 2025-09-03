@@ -1,10 +1,15 @@
 #Code overview for  BUSCOs from McCullough et al. 2025
 # Written by Jenna McCullough 18 April 2025 
 
-#This document is a general overview of the code we used to extract BUSCOs from the final .bam files. The Dryad repository has a datasets.zip file that has many of the final output files described here. This was written to extract BUSCO loci out of resequenced whole genomes that are all aligned to the same reference genome of a Todiramphus chloris (TodChl). 
+#This document is a general overview of the code we used to extract BUSCOs from the final .bam files.
+# The Dryad repository has a datasets.zip file that has many of the final output files described here. 
+# This was written to extract BUSCO loci out of resequenced whole genomes that are all aligned to the same
+# reference genome of a Todiramphus chloris (TodChl). 
 
 ########################## Preparing Data  ############################################
-# prior to extracting BUSCOs, I got consensus sequences for the genomes. On the HPC, I did ran this script in an R environment. The "getConsensus.R" script that is called here is in in the specific_scripts directory. 
+# prior to extracting BUSCOs, I got consensus sequences for the genomes. On the HPC, I 
+# ran this script in an R environment. The "getConsensus.R" script that is called here
+# is in in the specific_scripts directory. 
 
 source("getConsensus.R")
 library(parallel)
