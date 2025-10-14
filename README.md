@@ -8,7 +8,11 @@ The Dryad link is here:
 
 The Zenodo link is here: 
 
-Because the bioinformatic steps for analyzing data were performed across a mix of high performance computing clusters and piecemealed across different sample subsets, I thought it would be better to publish general summaries of the code with notes instead. See bioinformatic-workflow-figure.png for a visual representation of this workflow. 
+This study extracted four types of molecular markers from moderate coverage (20X) whole genomes: Ultraconserved Elements (UCEs), benckmarking universal single copy orthologous loci (BUSCOs), Single Nucleotide Polymorphisms (SNPs), and mitochondrial genomes (mtDNA). 
+
+<img width="719" height="546" alt="bioinformatic-workflow-figure" src="https://github.com/user-attachments/assets/384a0e19-99d5-4149-9cef-d36f41840a8a" />
+
+Approximately half of DNA samples were derived from clippings of toepads of museum study skins. Many of the notes in this repository discusses the steps taken to ameliorate issues with these historical samples. Because the bioinformatic steps for analyzing data were performed across a mix of high performance computing clusters and piecemealed across different sample subsets, I've included summaries of the code with notes instead.  
 
 There are 5 different summary files in this repository: 
 1. RawReads-to-bams.txt: processing raw read data to producing the final bam files
