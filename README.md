@@ -1,12 +1,12 @@
-# Overview of code used in McCullough et al. (in review) 
+# Overview of code used in McCullough et al. 2025
 
 This repository serves to publish code overviews and notes for the bioinformatic steps taken in McCullough et al. (in review) "Phylogenomics of a genus of ‘Great Speciators’ reveals rampant incomplete lineage sorting, gene flow, and mitochondrial discordance in island systems". 
 
 The link to this study is here: 
 
-The Dryad link is here:
+The Dryad link is here: https://datadryad.org/dataset/doi:10.5061/dryad.cfxpnvxg8 
 
-The Zenodo link is here: 
+The Zenodo link is here: https://zenodo.org/records/18939768
 
 This study extracted four types of molecular markers from moderate coverage (20X) whole genomes: Ultraconserved Elements (UCEs), benckmarking universal single copy orthologous loci (BUSCOs), Single Nucleotide Polymorphisms (SNPs), and mitochondrial genomes (mtDNA). 
 
