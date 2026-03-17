@@ -2,7 +2,7 @@
 
 This repository serves to publish code overviews and notes for the bioinformatic steps taken in McCullough et al. (in review) "Phylogenomics of a genus of ‘Great Speciators’ reveals rampant incomplete lineage sorting, gene flow, and mitochondrial discordance in island systems". 
 
-The link to this study is here: 
+The link to this study is here: https://academic.oup.com/sysbio/advance-article-abstract/doi/10.1093/sysbio/syaf075/8293216
 
 The Dryad link is here: https://datadryad.org/dataset/doi:10.5061/dryad.cfxpnvxg8 
 
