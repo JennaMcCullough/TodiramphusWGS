@@ -8,6 +8,8 @@ The Dryad link is here: https://datadryad.org/dataset/doi:10.5061/dryad.cfxpnvxg
 
 The Zenodo link is here: https://zenodo.org/records/18939768
 
+I have also included the supplemental tables (Appendix_1.xlsx), as well as supplemental figures and discussion (Appendix_2.pdf). 
+
 This study extracted four types of molecular markers from moderate coverage (20X) whole genomes: Ultraconserved Elements (UCEs), benckmarking universal single copy orthologous loci (BUSCOs), Single Nucleotide Polymorphisms (SNPs), and mitochondrial genomes (mtDNA). 
 
 <img width="719" height="546" alt="bioinformatic-workflow-figure" src="https://github.com/user-attachments/assets/384a0e19-99d5-4149-9cef-d36f41840a8a" />
