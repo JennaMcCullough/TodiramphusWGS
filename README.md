@@ -1,6 +1,6 @@
 # Overview of code used in McCullough et al. 2025
 
-This repository serves to publish code overviews and notes for the bioinformatic steps taken in McCullough et al. (in review) "Phylogenomics of a genus of ‘Great Speciators’ reveals rampant incomplete lineage sorting, gene flow, and mitochondrial discordance in island systems". 
+This repository serves to publish code overviews and notes for the bioinformatic steps taken in McCullough et al. 2025 "Phylogenomics of a genus of ‘Great Speciators’ reveals rampant incomplete lineage sorting, gene flow, and mitochondrial discordance in island systems". 
 
 The link to this study is here: https://academic.oup.com/sysbio/advance-article-abstract/doi/10.1093/sysbio/syaf075/8293216
 
